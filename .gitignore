@@ -1,0 +1,7 @@
+# Downloaded/extracted firmware blobs — fetched on demand by scripts/fetch-firmware.sh,
+# never committed (multi-GB OTA packages exceed normal git/GitHub limits).
+firmware/*
+!firmware/.gitkeep
+
+# Build output
+out/
