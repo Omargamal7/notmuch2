@@ -6,8 +6,16 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-ls firmware/*.zip >/dev/null 2>&1 || ./scripts/fetch-firmware.sh
-[[ -d firmware/extracted ]] || ./scripts/extract-payload.sh
+source <(grep -E '^source_type=' VERSION)
+
+ls firmware/* >/dev/null 2>&1 || ./scripts/fetch-firmware.sh
+if [[ ! -d firmware/extracted ]]; then
+  if [[ "$source_type" == "ota-zip" ]]; then
+    ./scripts/extract-payload.sh
+  else
+    ./scripts/extract-images.sh
+  fi
+fi
 
 if [[ -d patches/ramdisk || -d patches/system-overlay ]]; then
   ./scripts/unpack-boot.sh
