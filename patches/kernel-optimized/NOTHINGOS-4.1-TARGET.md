@@ -55,40 +55,18 @@ with `olddefconfig`. Results:
 | `LRU_GEN`, `DAMON` (+PADDR/RECLAIM) | survive ✅ |
 | `SHADOW_CALL_STACK`, `HARDENED_USERCOPY`, `INIT_STACK_ALL_ZERO` | survive ✅ |
 | `DEFAULT_TCP_CONG="bbr"`, `ZRAM`, `CPU_MITIGATIONS`, `HZ_250` | survive ✅ |
-| QCOM stack (`SCHED_WALT`, `QCOM_MEMLAT`, …) | stay `=m` ✅ (see below) |
+| QCOM stack (`SCHED_WALT`, `QCOM_MEMLAT`, …) | forced `=y` — see "Verified on the build VM" |
 | `KASAN_HW_TAGS` | **dropped** — needs `CONFIG_KASAN=y`, which arter97 disables |
 | `LRU_GEN_ENABLED` | **does not exist** in this tree — removed from the fragment |
-| `LTO_CLANG_THIN` / `CFI_CLANG` | degrade to `LTO_NONE` **only under the wrong clang** — see below |
-
-### The LTO false alarm
-
-Expanding with the container's Ubuntu clang 18 yields `CONFIG_LTO_NONE=y`.
-The **base defconfig alone does the same**, so this is a compiler-capability
-gate, not a fragment defect. On the build VM with ClangBuiltLinux 22.1.0 it
-should hold ThinLTO. Verify explicitly after configuring:
-
-```sh
-grep -E '^CONFIG_LTO' .config     # expect LTO_CLANG_THIN=y
-```
-
-If it says `LTO_NONE`, the toolchain is wrong — stop and fix that before
-building, because CFI silently follows LTO down.
-
-### Why the QCOM symbols stay `=m`
-
-An earlier revision forced them to `=y`. The merge log showed that overriding
-**ten vendor symbols at once**. arter97 keeps them modular; building vendor
-drivers into the Image while `vendor_dlkm` still provides the matching `.ko`
-is a route to duplicate driver init. They are now asserted at `=m` purely as
-a tripwire — a rebase that changes them produces a visible "redefined"
-warning.
+| `LTO_CLANG_THIN` / `CFI_CLANG` | degrade to `LTO_NONE` unless the full LLVM toolset is passed |
 
 ## Build gotchas in his tree
 
 - `Makefile:401` has `override LLVM_PATH := /home/arter97/android/nathan/...`.
   `override` beats command-line assignment, so you cannot set `LLVM_PATH=`.
   Either patch that line or override the consumers directly:
-  `make LD=ld.lld CC=clang HOSTCC=gcc …`
+  `make CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm … LLVM_IAS=1` (full toolset —
+  see the LTO note below; do NOT pass `LLVM=1`, it re-enables that path)
 - `build_kernel.sh` copies the **root-level** `defconfig`, not
   `arch/arm64/configs/defconfig`. The latter expands to a generic config with
   no MGLRU, WALT or zram and is not what built r45b2. Merge against the root
