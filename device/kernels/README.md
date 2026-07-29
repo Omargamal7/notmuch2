@@ -47,9 +47,13 @@ GKI-derived ones — functionally present either way, different packaging.
 
 ## Findings that matter
 
-1. **arter97 r45b2 is the only kernel with the QCOM power stack built in
-   *and* MGLRU.** That combination exists nowhere else in the survey, which
-   makes it the natural base for an optimized build.
+1. **arter97 r45b2 is the only kernel in the survey with MGLRU** (backported
+   by him — it is not in ACK `android12-5.10`), which makes it the natural
+   base for an optimized build. Note one unresolved discrepancy: QCOM stack
+   strings (`sched_walt:`, `qcom-memlat:`) appear in his `Image` even though
+   his config marks those symbols `=m`. The config is the authority for what
+   to build; treat the string counts in the table above as an indicator of
+   *presence*, not of built-in vs module.
 2. **Nobody disables CPU mitigations.** `CONFIG_CPU_MITIGATIONS=y` wherever
    the symbol exists; absent only on the stale 5.10.185-era defconfigs,
    where it defaults to `y` anyway. No `anykernel.sh` in 14 packages patches
