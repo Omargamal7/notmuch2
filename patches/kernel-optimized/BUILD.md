@@ -23,7 +23,7 @@ largest untapped lever, and one no CLO-based Pong kernel currently uses.
 | Piece | From | Cost |
 |---|---|---|
 | MGLRU | already in arter97 r45b2 | free |
-| QCOM power stack (built-in) | already in arter97 r45b2 | free |
+| QCOM power stack | in the tree, but `=m` and inert until `MODULES` is restored | one source patch |
 | DAMON | config flip (code is in ACK android12-5.10) | free |
 | BBR default | config flip | free |
 | PGO/BOLT/MLGO toolchain | WildKernels / Zixine build setup | build-side only |
@@ -31,29 +31,46 @@ largest untapped lever, and one no CLO-based Pong kernel currently uses.
 
 ## Build
 
+Verified end-to-end on the GCE builder. Do not substitute
+`arch/arm64/configs/defconfig` for the root-level `defconfig` — they are
+different files and the former does not build this kernel.
+
 ```sh
-# 1. base tree
-git clone <arter97 pong r45b2 tree> && cd <tree>
+git clone --depth 1 -b master \
+    https://github.com/arter97/android_kernel_nothing_sm8475 pong
+git clone --depth 1 -b kernel-optimized \
+    https://github.com/Omargamal7/notmuch2 cfg
+cd pong && cat version          # must print r45b2
 
-# 2. toolchain — the AOSP clang that carries +pgo +bolt +lto +mlgo
-#    (the exact one in WildKernels-KSUNext-SUSFS-Pong's banner: clang 21)
-#    from android.googlesource.com/platform/prebuilts/clang/host/linux-x86
+# required source patch (see "Source patches" below)
+patch -p1 < ../cfg/patches/kernel-optimized/0001-mm-vmalloc-drop-orphaned-map_kernel_range-export.patch
 
-# 3. merge the fragment
-scripts/kconfig/merge_config.sh -m arch/arm64/configs/<base>_defconfig \
-    patches/kernel-optimized/pong_optimized.fragment
-make O=out olddefconfig
+# stamp 4.1, not 4.0 — anti-rollback
+sed -i 's/^export OS=.*/export OS="16.0.0"/;s/^export SPL=.*/export SPL="2026-06"/' build_kernel.sh
 
-# 4. verify the merge actually took — merge_config warns on conflicts but
-#    vendor symbol names drift between trees, so check the ones that matter
-for s in LRU_GEN DAMON SCHED_WALT QCOM_MEMLAT DEFAULT_BBR CPU_MITIGATIONS; do
-  grep -E "^CONFIG_${s}[=_]" out/.config || echo "MISSING: $s"
-done
+# the FULL LLVM toolset is mandatory: with GNU ar/nm the LTO gate fails
+# silently and takes CFI with it. Do NOT pass LLVM=1 (Makefile:401 has
+# `override LLVM_PATH :=` pointing at arter97's home directory).
+TOOLS="CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy \
+       OBJDUMP=llvm-objdump READELF=llvm-readelf STRIP=llvm-strip \
+       HOSTCC=gcc LLVM_IAS=1"
 
-make O=out -j$(nproc) Image
+cp defconfig .config
+scripts/kconfig/merge_config.sh -m .config \
+    ../cfg/patches/kernel-optimized/pong_optimized.fragment
+make ARCH=arm64 $TOOLS olddefconfig
+
+# GATE — do not build if either check fails
+grep -q '^CONFIG_LTO_CLANG_THIN=y' .config || echo "FATAL: LTO off"
+grep -q '^CONFIG_QCOM_KGSL=y'      .config || echo "FATAL: no GPU driver"
+
+make ARCH=arm64 $TOOLS -j$(nproc) Image.gz
+./build_kernel.sh skip          # ramdisk + mkbootimg, kernel already built
 ```
 
-Build it on the GCE kernel-builder VM, not locally.
+Build on the GCE kernel-builder VM. Note its root disk is small — the 200 GB
+`/dev/sdb` has no fstab entry and must be mounted manually
+(`mount /dev/sdb /mnt/build`).
 
 ## Verify before flashing
 
