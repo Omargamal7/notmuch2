@@ -43,47 +43,27 @@ CONFIG_ZSMALLOC=y
 # CONFIG_ZRAM_WRITEBACK is not set
 
 # ---------------------------------------------------------------------------
-# Module support — MUST be restored, see below
+# Modules and the QCOM stack — DO NOT TOUCH. Verified the hard way.
 # ---------------------------------------------------------------------------
-# arter97 sets CONFIG_LAZY_INITCALL=y (one of his patches). In init/Kconfig,
-# `menuconfig MODULES` has `depends on !LAZY_INITCALL` — so that single option
-# force-disables module support entirely. His committed defconfig still
-# carries 328 stale `=m` lines that are then silently inert: with MODULES=n a
-# `=m` symbol is built neither as a module nor into the image. That includes
-# CONFIG_QCOM_KGSL (the Adreno GPU driver), which cannot be forced to =y while
-# its dependencies are also =m — i.e. a build straight from his committed
-# defconfig produces a kernel with no GPU driver.
+# init/Kconfig puts `option modules` on `menuconfig LAZY_INITCALL`, not on
+# MODULES, and `MODULES depends on !LAZY_INITCALL`. They are mutually
+# exclusive, and LAZY_INITCALL is the symbol that makes `=m` legal here.
 #
-# That means the committed defconfig does NOT reproduce his shipped r45b2
-# (whose Image demonstrably contains the WALT/memlat/GPU code). Turning
-# LAZY_INITCALL off restores MODULES and lets the whole vendor stack resolve
-# cleanly to =y — verified on the build VM: 0 stale =m symbols remain.
+# LAZY_INITCALL builds a MONOLITHIC kernel: `=m` means "compiled in, but defer
+# this driver's initcall until userspace modprobes a module of that name", so
+# Android's module expectations are met without a module loader. The 328 `=m`
+# symbols in his defconfig are therefore NOT stale — CONFIG_QCOM_KGSL=m means
+# the Adreno driver IS built in, just lazily initialised. Likewise SCHED_WALT,
+# QCOM_MEMLAT and the rest of the power stack: already present, nothing to do.
 #
-# Trade-off: LAZY_INITCALL is a boot-time optimisation. It is given up here in
-# exchange for a kernel that actually contains its GPU and power drivers.
-# CONFIG_LAZY_INITCALL is not set
-CONFIG_MODULES=y
-CONFIG_MODULE_UNLOAD=y
-
-# ---------------------------------------------------------------------------
-# Qualcomm scheduler / power / thermal stack
-# ---------------------------------------------------------------------------
-# With MODULES restored these all resolve to =y. The dependency chain matters:
-# QCOM_MEMLAT depends on QCOM_DCVS && QCOM_PMU_LIB, and the GPU governors
-# depend on QCOM_KGSL — force a leaf without its parents and it silently
-# stays =m. Verified on the VM that every line below lands as =y.
-CONFIG_QCOM_DCVS=y
-CONFIG_QCOM_DCVS_FP=y
-CONFIG_QCOM_PMU_LIB=y
-CONFIG_QCOM_MEMLAT=y
-CONFIG_SCHED_WALT=y
-CONFIG_CPU_IDLE_GOV_QCOM_LPM=y
-CONFIG_QCOM_KGSL=y
-CONFIG_DEVFREQ_GOV_QCOM_ADRENO_TZ=y
-CONFIG_DEVFREQ_GOV_QCOM_GPUBW_MON=y
-CONFIG_QTI_THERMAL_LIMITS_DCVS=y
-CONFIG_QTI_CPUFREQ_CDEV=y
-CONFIG_QTI_DEVFREQ_CDEV=y
+# Setting CONFIG_MODULES=y disables LAZY_INITCALL, strips `option modules`, and
+# forces all 328 to immediate =y. That drags qcacld-3.0 and focaltech_touch
+# into built-in.a where they cannot build — qcacld's Kbuild is not written for
+# it, and focaltech needs a firmware header that is not committed to the tree.
+# Confirmed on the build VM; do not re-litigate this.
+#
+# Asserted only as a tripwire.
+CONFIG_LAZY_INITCALL=y
 
 # [have] EAS. Unchanged — schedutil + uclamp + energy model is already right.
 CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL=y

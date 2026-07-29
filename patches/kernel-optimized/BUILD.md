@@ -118,16 +118,10 @@ Only flash after a `fastboot boot` session survives normal use.
   17 kernels. Treat the first build as a hypothesis to measure, not a
   finished tune.
 
-## Source patches
+## No source patches needed
 
-`0001-mm-vmalloc-drop-orphaned-map_kernel_range-export.patch` must be applied
-before building. It removes a dangling `EXPORT_SYMBOL_GPL` for a function that
-no longer exists in arter97's tree — harmless for him because
-`CONFIG_LAZY_INITCALL=y` disables modules and neuters `EXPORT_SYMBOL*`, but a
-hard build failure once `CONFIG_MODULES=y` is restored (which this config
-requires, or the GPU driver isn't built at all).
-
-```sh
-cd <arter97 tree>
-patch -p1 < patches/kernel-optimized/0001-mm-vmalloc-drop-orphaned-map_kernel_range-export.patch
-```
+An earlier revision shipped a patch removing a dangling
+`EXPORT_SYMBOL_GPL(map_kernel_range)`. That was only required because that
+revision wrongly set `CONFIG_MODULES=y`; with `LAZY_INITCALL=y` (the correct
+setting for this tree) `EXPORT_SYMBOL*` is a no-op and the stale export is
+harmless. The tree builds unpatched.
