@@ -107,13 +107,41 @@ adb shell cat /sys/kernel/mm/lru_gen/enabled
 
 Make it persistent from userspace once it is proven stable.
 
+## Verified on the build VM
+
+Steps 1-5 were run on `max-perf-kernel-builder`. Three real blockers were
+found and fixed; all are now handled by the fragment:
+
+1. **LTO silently disabled.** `HAS_LTO_CLANG` needs `AS_IS_LLVM` + `llvm-nm` +
+   `llvm-ar`. Passing only `CC`/`LD` fails the gate and yields
+   `CONFIG_LTO_NONE=y`, taking CFI with it. Not a clang-version issue —
+   Debian clang 19.1.7 works with the full toolset and `LLVM_IAS=1`. The
+   earlier guess that this needed clang 22 was wrong.
+2. **`LAZY_INITCALL` kills module support.** `menuconfig MODULES` has
+   `depends on !LAZY_INITCALL`, so arter97's `CONFIG_LAZY_INITCALL=y` disables
+   modules entirely, leaving 328 inert `=m` lines — including `QCOM_KGSL`,
+   the GPU driver. Building from his committed defconfig as-is yields a
+   kernel with no GPU driver and no vendor stack.
+3. **Dependency chains.** `QCOM_MEMLAT` needs `QCOM_DCVS` + `QCOM_PMU_LIB`;
+   the GPU governors need `QCOM_KGSL`. Forcing a leaf without its parents
+   leaves it `=m`.
+
+With the fragment applied and `LAZY_INITCALL` off: every vendor symbol
+resolves to `=y`, `LTO_CLANG_THIN=y`, `LRU_GEN=y`, `DAMON=y`, and **0 stale
+`=m` symbols remain**.
+
 ## Residual risk
 
-- Stock 4.1 `vendor_dlkm` modules are built against 5.10.237; arter97's kernel
-  is 5.10.251. Same KMI generation, so this should work — but it is the single
-  most likely failure mode, and it shows up as modules failing to load
-  (no display, no modem, no wifi). Check `dmesg | grep -i "module\|kmi"` on the
-  first `fastboot boot`.
+- **The committed defconfig does not reproduce the shipped r45b2.** His
+  binary contains WALT/memlat/GPU code that a build from his own defconfig
+  would omit. Whatever config he ships from is not in the public tree, so
+  this build is "arter97's source, our config" — not a rebuild of r45b2.
+- Because module support is restored here, stock 4.1 `vendor_dlkm` modules
+  may now load *alongside* built-in drivers. Watch for duplicate driver init
+  on the first boot: `dmesg | grep -iE "already registered|duplicate|failed"`.
+- `CONFIG_QCOM_KGSL=y` builds the Adreno driver in. If the 4.1 `vendor_dlkm`
+  also provides `msm_kgsl.ko`, the built-in one wins and the module should
+  fail to load harmlessly — but that is unverified on hardware.
 - His config sets `CONFIG_LOCALVERSION="-arter97-'$(cat version)'"` with
   `LOCALVERSION_AUTO=y`. Module vermagic derives from the release string; if
   vendor modules refuse to load, this is the first thing to look at.

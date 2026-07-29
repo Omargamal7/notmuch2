@@ -43,23 +43,47 @@ CONFIG_ZSMALLOC=y
 # CONFIG_ZRAM_WRITEBACK is not set
 
 # ---------------------------------------------------------------------------
-# Qualcomm scheduler / power / thermal stack  — LEFT AS MODULES ON PURPOSE
+# Module support — MUST be restored, see below
 # ---------------------------------------------------------------------------
-# All of these exist in the tree and are `=m` in arter97's config. An earlier
-# revision of this fragment forced them to =y; the test merge showed that
-# overrides ten vendor symbols at once. Building vendor drivers into the Image
-# while vendor_dlkm still ships the matching .ko is how you get duplicate
-# driver init and a boot loop, so the =m layout is kept deliberately.
-# Asserted at their existing values purely as a tripwire: if a rebase changes
-# any of these, merge_config prints a "redefined" warning and you look.
-CONFIG_SCHED_WALT=m
-CONFIG_QCOM_MEMLAT=m
-CONFIG_CPU_IDLE_GOV_QCOM_LPM=m
-CONFIG_DEVFREQ_GOV_QCOM_ADRENO_TZ=m
-CONFIG_DEVFREQ_GOV_QCOM_GPUBW_MON=m
-CONFIG_QTI_THERMAL_LIMITS_DCVS=m
-CONFIG_QTI_CPUFREQ_CDEV=m
-CONFIG_QTI_DEVFREQ_CDEV=m
+# arter97 sets CONFIG_LAZY_INITCALL=y (one of his patches). In init/Kconfig,
+# `menuconfig MODULES` has `depends on !LAZY_INITCALL` — so that single option
+# force-disables module support entirely. His committed defconfig still
+# carries 328 stale `=m` lines that are then silently inert: with MODULES=n a
+# `=m` symbol is built neither as a module nor into the image. That includes
+# CONFIG_QCOM_KGSL (the Adreno GPU driver), which cannot be forced to =y while
+# its dependencies are also =m — i.e. a build straight from his committed
+# defconfig produces a kernel with no GPU driver.
+#
+# That means the committed defconfig does NOT reproduce his shipped r45b2
+# (whose Image demonstrably contains the WALT/memlat/GPU code). Turning
+# LAZY_INITCALL off restores MODULES and lets the whole vendor stack resolve
+# cleanly to =y — verified on the build VM: 0 stale =m symbols remain.
+#
+# Trade-off: LAZY_INITCALL is a boot-time optimisation. It is given up here in
+# exchange for a kernel that actually contains its GPU and power drivers.
+# CONFIG_LAZY_INITCALL is not set
+CONFIG_MODULES=y
+CONFIG_MODULE_UNLOAD=y
+
+# ---------------------------------------------------------------------------
+# Qualcomm scheduler / power / thermal stack
+# ---------------------------------------------------------------------------
+# With MODULES restored these all resolve to =y. The dependency chain matters:
+# QCOM_MEMLAT depends on QCOM_DCVS && QCOM_PMU_LIB, and the GPU governors
+# depend on QCOM_KGSL — force a leaf without its parents and it silently
+# stays =m. Verified on the VM that every line below lands as =y.
+CONFIG_QCOM_DCVS=y
+CONFIG_QCOM_DCVS_FP=y
+CONFIG_QCOM_PMU_LIB=y
+CONFIG_QCOM_MEMLAT=y
+CONFIG_SCHED_WALT=y
+CONFIG_CPU_IDLE_GOV_QCOM_LPM=y
+CONFIG_QCOM_KGSL=y
+CONFIG_DEVFREQ_GOV_QCOM_ADRENO_TZ=y
+CONFIG_DEVFREQ_GOV_QCOM_GPUBW_MON=y
+CONFIG_QTI_THERMAL_LIMITS_DCVS=y
+CONFIG_QTI_CPUFREQ_CDEV=y
+CONFIG_QTI_DEVFREQ_CDEV=y
 
 # [have] EAS. Unchanged — schedutil + uclamp + energy model is already right.
 CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL=y
@@ -80,15 +104,23 @@ CONFIG_TCP_CONG_CUBIC=y
 CONFIG_NET_SCH_FQ_CODEL=y
 
 # ---------------------------------------------------------------------------
-# Codegen — LTO is compiler-gated, verify it survived on the real toolchain
+# Codegen — LTO needs the FULL LLVM toolset, not just CC and LD
 # ---------------------------------------------------------------------------
-# arter97 uses ThinLTO. The LTO choice is gated on compiler capability checks,
-# so it silently degrades to CONFIG_LTO_NONE=y when expanded with a toolchain
-# that fails them — the base defconfig alone does this too, so a bare
-# `olddefconfig` on the wrong clang is NOT evidence of a fragment problem.
-# Do not "fix" it by forcing LTO_CLANG_FULL; that fights the choice block.
-# After configuring on the build VM (clang 22), confirm:
-#     grep -E '^CONFIG_LTO' .config     # expect LTO_CLANG_THIN=y, not LTO_NONE
+# HAS_LTO_CLANG in arch/Kconfig requires AS_IS_LLVM plus llvm-nm and llvm-ar:
+#     depends on CC_IS_CLANG && CLANG_VERSION >= 110000 && LD_IS_LLD && AS_IS_LLVM
+#     depends on $(success,$(NM) --help | head -n 1 | grep -qi llvm)
+#     depends on $(success,$(AR) --help | head -n 1 | grep -qi llvm)
+# Passing only CC=clang LD=ld.lld leaves AR/NM as GNU binutils, the gate fails,
+# and the LTO choice silently falls back to CONFIG_LTO_NONE=y — which also
+# takes CFI down with it. This is NOT a clang-version problem: Debian clang
+# 19.1.7 passes fine once the whole toolset is supplied. Build with:
+#
+#   make ARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm \
+#        OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump READELF=llvm-readelf \
+#        STRIP=llvm-strip HOSTCC=gcc LLVM_IAS=1 ...
+#
+# Do NOT pass LLVM=1 — the Makefile's `override LLVM_PATH :=` points at
+# arter97's home directory and will be used for the whole toolset.
 CONFIG_LTO_CLANG=y
 CONFIG_LTO_CLANG_THIN=y
 CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y
