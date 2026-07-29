@@ -31,7 +31,7 @@ not from the embedded `IKCONFIG`.
 
 | Kernel | Version | QCOM power stack | MGLRU | DAMON | BBR | Toolchain |
 |---|---|---|---|---|---|---|
-| **arter97 r45b2** | 5.10.251 | **built-in** | **yes** | no | yes | ClangBuiltLinux 22.1.0 |
+| **arter97 r45b2** | 5.10.251 | `=m` (modules) | **yes** | no | **default** | ClangBuiltLinux 22.1.0 |
 | Meteoric V6 | 5.10.237 | built-in | no | yes | yes | Neutron clang 19 |
 | Ryuusei | 5.10.248 | built-in | no | yes | yes | Ubuntu clang 18.1.3 |
 | LineageOS-ReSukiSU | 5.10.246-gki | modules (`=m`) | no | yes | no (cubic only) | Ubuntu clang 18.1.3 |
@@ -55,9 +55,12 @@ GKI-derived ones — functionally present either way, different packaging.
    where it defaults to `y` anyway. No `anykernel.sh` in 14 packages patches
    the cmdline, and every `boot.img` cmdline field is empty. The
    "custom kernels turn off mitigations for speed" belief is false here.
-3. **Nobody uses `-O3`, and nobody strips hardening** — CFI, shadow call
-   stack, `KASAN_HW_TAGS` (MTE, boot-gated so near-free), UCLAMP and
-   ENERGY_MODEL are on everywhere.
+3. **Nobody uses `-O3`. But arter97 *does* strip hardening** — his source
+   tree (checked directly) disables `CFI_CLANG`, `SHADOW_CALL_STACK`,
+   `HARDENED_USERCOPY` and `KASAN`, and sets `INIT_STACK_NONE`. That is his
+   actual performance strategy, and it is invisible in the embedded config.
+   An earlier revision of this file claimed nobody strips hardening; that was
+   read off the stale embedded configs and was wrong. Mitigations stay on.
 4. **The largest untapped lever is the toolchain.** PGO + BOLT + MLGO
    (WildKernels' Android clang 21, Zixine's clang 18) is real, measurable
    optimization and is invisible to any config diff — it shows up only in

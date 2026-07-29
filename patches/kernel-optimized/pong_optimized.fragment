@@ -1,69 +1,67 @@
 # Optimized Pong kernel — defconfig fragment
 #
-# Merge over the base defconfig, e.g.:
-#   scripts/kconfig/merge_config.sh -m arch/arm64/configs/<base>_defconfig \
+#   scripts/kconfig/merge_config.sh -m defconfig \
 #       patches/kernel-optimized/pong_optimized.fragment
 #
-# Base tree assumption: arter97 r45b2 (5.10.251). It is the only surveyed
-# kernel carrying both MGLRU and the built-in Qualcomm power stack — see
-# device/kernels/README.md. Every line below states where it came from and
-# whether it was verified.
+# NOTE: the base is the *root-level* `defconfig` (7537 lines), which is what
+# build_kernel.sh copies to .config. It is NOT arch/arm64/configs/defconfig —
+# that one expands to a generic config with no MGLRU, WALT or zram, and is
+# not what built r45b2.
 #
-# Legend: [have] already in the base, asserted so a tree change can't
-#         silently drop it.  [add] new vs the base.  [check] needs
-#         verification against the tree before building.
+# Verified against arter97/android_kernel_nothing_sm8475 @ master
+# (906ca150c6ae = r45b2, matches the shipped boot.img banner). Every symbol
+# below was checked for existence in the tree's Kconfig, and the whole
+# fragment was test-merged + expanded with `olddefconfig`.
+#
+# [have] already set in the base, asserted so a rebase can't silently drop it
+# [add]  genuine change vs the base
+# [opt]  deliberate divergence from arter97 — read the note before enabling
 
 # ---------------------------------------------------------------------------
 # Memory reclaim
 # ---------------------------------------------------------------------------
-# [have] MGLRU. Verified present in arter97 r45b2 (lru_gen, lru_gen_full,
-# min_ttl_ms, and the lru_gen_init() sysfs-group printk). NOT in ACK
-# android12-5.10 — Google put it on android13-5.10 — so on any other base
-# this needs the mm/ patch series first, and the symbol alone does nothing.
-# _ENABLED makes it on-by-default instead of requiring the sysfs toggle.
+# [have] MGLRU. arter97 backported it himself (182 lru_gen hits in mm/vmscan.c);
+# it is NOT in ACK android12-5.10. LRU_GEN_WALKS_MMU is def_bool and comes for
+# free. There is NO CONFIG_LRU_GEN_ENABLED in this tree, so MGLRU is compiled
+# in but OFF at boot — enable it at runtime:
+#     echo y > /sys/kernel/mm/lru_gen/enabled
 CONFIG_LRU_GEN=y
-CONFIG_LRU_GEN_ENABLED=y
 
-# [add] DAMON. In ACK android12-5.10 already (Meteoric/LineageOS/Zixine all
-# enable it); arter97 has zero DAMON symbols, so this is a real addition.
-# PADDR without VADDR is the correct pairing — DAMON_RECLAIM monitors the
-# physical address space, not per-process virtual space.
+# [add] DAMON. arter97 explicitly disables it (`# CONFIG_DAMON is not set`)
+# and the binary has zero DAMON symbols — the widely-repeated claim that his
+# kernel enables DAMON comes from a stale embedded config. The code is in the
+# tree (mm/damon/), so this is a config flip. Verified to survive the merge.
 CONFIG_DAMON=y
 CONFIG_DAMON_PADDR=y
 # CONFIG_DAMON_VADDR is not set
 CONFIG_DAMON_RECLAIM=y
 
-# [have] zram. Keep zstd. Writeback deliberately OFF: on a 12 GB device it
-# buys little and adds storage-backed stalls (arter97's stated reasoning;
-# the GKI-derived kernels leave ZRAM_WRITEBACK=y).
+# [have] zram, writeback already off — matches arter97's reasoning that a
+# 12 GB device gains nothing and pays storage-backed stalls for it.
 CONFIG_ZRAM=y
 CONFIG_ZSMALLOC=y
 # CONFIG_ZRAM_WRITEBACK is not set
 
 # ---------------------------------------------------------------------------
-# Qualcomm scheduler / power / thermal stack
+# Qualcomm scheduler / power / thermal stack  — LEFT AS MODULES ON PURPOSE
 # ---------------------------------------------------------------------------
-# [have] Built-in on this base (verified: sched_walt printks, waltgov,
-# memlat, LPM governor, adreno_tz, gpubw_mon, limits_dcvs). This is the
-# actual perf/power machinery — GPU freq + bandwidth governors, memory
-# latency governor, LMH thermal, CPU idle LPM. Asserted =y so a rebase onto
-# a GKI tree (where these are =m in vendor_dlkm) is a loud failure, not a
-# silent behaviour change.
-# [check] exact symbol names against the tree — these are CLO/vendor symbols
-# and drift between bases.
-CONFIG_SCHED_WALT=y
-CONFIG_QCOM_MEMLAT=y
-CONFIG_CPU_IDLE_GOV_QCOM_LPM=y
-CONFIG_DEVFREQ_GOV_QCOM_ADRENO_TZ=y
-CONFIG_DEVFREQ_GOV_QCOM_GPUBW_MON=y
-CONFIG_QTI_THERMAL_LIMITS_DCVS=y
-CONFIG_ARM_QCOM_CPUFREQ_HW=y
-CONFIG_QTI_CPUFREQ_CDEV=y
-CONFIG_QTI_DEVFREQ_CDEV=y
-CONFIG_BUS_AUTO_SUSPEND=y
+# All of these exist in the tree and are `=m` in arter97's config. An earlier
+# revision of this fragment forced them to =y; the test merge showed that
+# overrides ten vendor symbols at once. Building vendor drivers into the Image
+# while vendor_dlkm still ships the matching .ko is how you get duplicate
+# driver init and a boot loop, so the =m layout is kept deliberately.
+# Asserted at their existing values purely as a tripwire: if a rebase changes
+# any of these, merge_config prints a "redefined" warning and you look.
+CONFIG_SCHED_WALT=m
+CONFIG_QCOM_MEMLAT=m
+CONFIG_CPU_IDLE_GOV_QCOM_LPM=m
+CONFIG_DEVFREQ_GOV_QCOM_ADRENO_TZ=m
+CONFIG_DEVFREQ_GOV_QCOM_GPUBW_MON=m
+CONFIG_QTI_THERMAL_LIMITS_DCVS=m
+CONFIG_QTI_CPUFREQ_CDEV=m
+CONFIG_QTI_DEVFREQ_CDEV=m
 
-# [have] EAS. Unchanged from stock and every surveyed kernel — schedutil +
-# uclamp + energy model is already the right setup; no governor swap.
+# [have] EAS. Unchanged — schedutil + uclamp + energy model is already right.
 CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL=y
 CONFIG_UCLAMP_TASK=y
 CONFIG_UCLAMP_TASK_GROUP=y
@@ -72,9 +70,9 @@ CONFIG_ENERGY_MODEL=y
 # ---------------------------------------------------------------------------
 # Network
 # ---------------------------------------------------------------------------
-# [add] BBR as default. Present but not default on this base. Zixine goes
-# further and compiles cubic out entirely; cubic is kept here as a fallback
-# so congestion control stays switchable at runtime.
+# [have] BBR is ALREADY the default in arter97's config — an earlier revision
+# of this fragment listed it as an addition, which was wrong. Cubic stays
+# compiled in so congestion control remains switchable at runtime.
 CONFIG_TCP_CONG_BBR=y
 CONFIG_DEFAULT_BBR=y
 CONFIG_DEFAULT_TCP_CONG="bbr"
@@ -82,40 +80,62 @@ CONFIG_TCP_CONG_CUBIC=y
 CONFIG_NET_SCH_FQ_CODEL=y
 
 # ---------------------------------------------------------------------------
-# Hardening — deliberately unchanged
+# Codegen — LTO is compiler-gated, verify it survived on the real toolchain
 # ---------------------------------------------------------------------------
-# Nothing in the survey disables these, and the "custom kernels turn
-# mitigations off for speed" claim was checked and is false for all 17.
-# KASAN_HW_TAGS is MTE-based and boot-gated, so it is near-free when off;
-# removing it buys nothing. Asserted to prevent a well-meaning "perf" edit.
+# arter97 uses ThinLTO. The LTO choice is gated on compiler capability checks,
+# so it silently degrades to CONFIG_LTO_NONE=y when expanded with a toolchain
+# that fails them — the base defconfig alone does this too, so a bare
+# `olddefconfig` on the wrong clang is NOT evidence of a fragment problem.
+# Do not "fix" it by forcing LTO_CLANG_FULL; that fights the choice block.
+# After configuring on the build VM (clang 22), confirm:
+#     grep -E '^CONFIG_LTO' .config     # expect LTO_CLANG_THIN=y, not LTO_NONE
+CONFIG_LTO_CLANG=y
+CONFIG_LTO_CLANG_THIN=y
+CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y
+
+# ---------------------------------------------------------------------------
+# Mitigations — keep ON
+# ---------------------------------------------------------------------------
+# Verified across 17 kernels: nobody disables these, including arter97, and no
+# anykernel.sh or boot cmdline sets mitigations=off. The "custom kernels turn
+# mitigations off for speed" belief is simply false here.
 CONFIG_CPU_MITIGATIONS=y
 CONFIG_ARM64_ERRATUM_3194386=y
-CONFIG_CFI_CLANG=y
+
+# ---------------------------------------------------------------------------
+# [opt] Hardening that arter97 deliberately REMOVES for speed
+# ---------------------------------------------------------------------------
+# This is his actual performance strategy, and it is the real answer to "what
+# did he change" — not mitigations, not O3. His config has:
+#     # CONFIG_CFI_CLANG is not set
+#     # CONFIG_SHADOW_CALL_STACK is not set
+#     # CONFIG_HARDENED_USERCOPY is not set
+#     # CONFIG_KASAN is not set
+#     CONFIG_INIT_STACK_NONE=y
+#
+# Re-enabling costs performance — that is the trade he made on purpose. Two
+# of the four below survive a merge as-is; the other two DO NOT and are left
+# commented with their real dependency, because silently-dropped hardening is
+# worse than no hardening.
 CONFIG_SHADOW_CALL_STACK=y
-CONFIG_STACKPROTECTOR_STRONG=y
-CONFIG_KASAN_HW_TAGS=y
 CONFIG_HARDENED_USERCOPY=y
 CONFIG_INIT_STACK_ALL_ZERO=y
 
-# ---------------------------------------------------------------------------
-# Codegen
-# ---------------------------------------------------------------------------
-# FullLTO over ThinLTO — build time is not the constraint here.
-# O2, not O3: the kernel is validated at O2, O3 inflates I-cache footprint,
-# and no surveyed kernel that felt fast was using it.
-CONFIG_LTO_CLANG=y
-CONFIG_LTO_CLANG_FULL=y
-CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y
+# CFI_CLANG depends on LTO_CLANG && KALLSYMS, so it disappears wherever LTO
+# degraded to LTO_NONE. Enable it only after confirming on the build VM that
+# LTO_CLANG_THIN actually survived — otherwise it drops without a word:
+# CONFIG_CFI_CLANG=y
+
+# KASAN_HW_TAGS depends on CONFIG_KASAN=y, which arter97 disables — asking for
+# HW_TAGS alone is a no-op. Enable the parent too if you want MTE:
+# CONFIG_KASAN=y
+# CONFIG_KASAN_HW_TAGS=y
 
 # ---------------------------------------------------------------------------
 # Deliberately NOT changed
 # ---------------------------------------------------------------------------
-# HZ: left at 250 (stock and 16 of 17 kernels). Zixine alone uses 300 with
-# no published benchmark. Change it only with a measurement behind it.
+# HZ stays 250 (arter97, stock, and 16 of 17 surveyed kernels). Zixine alone
+# uses 300 with no published benchmark. Change it with a measurement, not a
+# hunch.
 CONFIG_HZ_250=y
 CONFIG_HZ=250
-
-# Debug surface: DEBUG_INFO has no runtime cost (stripped from the loaded
-# Image), KALLSYMS_ALL costs memory not CPU, SLUB_DEBUG is inert without
-# slub_debug=. Trimming them is cargo-cult. DEBUG_LIST is the one with a
-# real (small) runtime cost — left on; disable only if profiling says so.
