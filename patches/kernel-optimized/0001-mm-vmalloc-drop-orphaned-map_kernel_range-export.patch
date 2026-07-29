@@ -1,0 +1,34 @@
+From: notmuch2 kernel-optimized
+Subject: [PATCH] mm/vmalloc: drop orphaned EXPORT_SYMBOL_GPL(map_kernel_range)
+
+arter97's tree carries an EXPORT_SYMBOL_GPL for map_kernel_range(), but that
+function no longer exists anywhere in the tree — it was superseded by
+vmap_pages_range(). `grep -rn map_kernel_range` matches only this one export
+line; there is no definition and no declaration in include/linux/vmalloc.h.
+
+This is invisible in arter97's own builds because he sets
+CONFIG_LAZY_INITCALL=y, which force-disables CONFIG_MODULES (init/Kconfig:
+`menuconfig MODULES depends on !LAZY_INITCALL`). With modules off the
+EXPORT_SYMBOL* macros expand to nothing, so the dangling reference is never
+compiled.
+
+The optimized config restores CONFIG_MODULES=y — required, because with
+modules disabled the 328 `=m` symbols in his defconfig (including
+CONFIG_QCOM_KGSL, the Adreno GPU driver) build to nothing at all. That makes
+the macro expand for real and the build fails with:
+
+  mm/vmalloc.c:639:19: error: use of undeclared identifier 'map_kernel_range'
+
+Removing the stale export is safe: it exported a symbol that does not exist,
+so nothing can have been linking against it.
+
+--- a/mm/vmalloc.c
++++ b/mm/vmalloc.c
+@@ -636,7 +636,6 @@
+ 	flush_cache_vmap(addr, end);
+ 	return err;
+ }
+-EXPORT_SYMBOL_GPL(map_kernel_range);
+
+ int is_vmalloc_or_module_addr(const void *x)
+ {
