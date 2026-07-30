@@ -14,16 +14,16 @@ both MGLRU and the built-in Qualcomm power stack (WALT, memlat, LPM idle
 governor, Adreno TZ + GPU bandwidth governors, LMH thermal). Add **DAMON**,
 which arter97 lacks and every other kernel has, and which is already in ACK
 android12-5.10 so it costs a config flip rather than a backport. Make
-**BBR** the default congestion control. Then build it with the **PGO + BOLT
-+ MLGO** Android toolchain that WildKernels and Zixine use — the single
-largest untapped lever, and one no CLO-based Pong kernel currently uses.
+**BBR** the default congestion control. A PGO/BOLT/MLGO toolchain remains the
+largest untapped lever, but the verified build used Debian clang 19.1.7 —
+swapping the toolchain is a separate, still-untested step.
 
 ## Ingredients and provenance
 
 | Piece | From | Cost |
 |---|---|---|
 | MGLRU | already in arter97 r45b2 | free |
-| QCOM power stack | in the tree, but `=m` and inert until `MODULES` is restored | one source patch |
+| QCOM power stack (WALT, memlat, KGSL) | already in arter97 r45b2 as lazy-init `=m` | free |
 | DAMON | config flip (code is in ACK android12-5.10) | free |
 | BBR default | config flip | free |
 | PGO/BOLT/MLGO toolchain | WildKernels / Zixine build setup | build-side only |
@@ -42,8 +42,11 @@ git clone --depth 1 -b kernel-optimized \
     https://github.com/Omargamal7/notmuch2 cfg
 cd pong && cat version          # must print r45b2
 
-# required source patch (see "Source patches" below)
-patch -p1 < ../cfg/patches/kernel-optimized/0001-mm-vmalloc-drop-orphaned-map_kernel_range-export.patch
+# arter97's tree does NOT build as published: focaltech_touch needs firmware
+# headers that were never committed. Source them from any other NP2 kernel
+# tree, e.g. a Nothing OS 4.1 build tree:
+#   cp -r <other-tree>/drivers/input/touchscreen/focaltech_touch/include/firmware \
+#         drivers/input/touchscreen/focaltech_touch/include/
 
 # stamp 4.1, not 4.0 — anti-rollback
 sed -i 's/^export OS=.*/export OS="16.0.0"/;s/^export SPL=.*/export SPL="2026-06"/' build_kernel.sh
@@ -62,7 +65,8 @@ make ARCH=arm64 $TOOLS olddefconfig
 
 # GATE — do not build if either check fails
 grep -q '^CONFIG_LTO_CLANG_THIN=y' .config || echo "FATAL: LTO off"
-grep -q '^CONFIG_QCOM_KGSL=y'      .config || echo "FATAL: no GPU driver"
+grep -q '^CONFIG_LRU_GEN=y'        .config || echo "FATAL: no MGLRU"
+grep -q '^CONFIG_DAMON=y'          .config || echo "FATAL: no DAMON"
 
 make ARCH=arm64 $TOOLS -j$(nproc) Image.gz
 ./build_kernel.sh skip          # ramdisk + mkbootimg, kernel already built
@@ -118,10 +122,17 @@ Only flash after a `fastboot boot` session survives normal use.
   17 kernels. Treat the first build as a hypothesis to measure, not a
   finished tune.
 
+## Built artifact
+
+A verified build is published as a release:
+<https://github.com/Omargamal7/notmuch2/releases/tag/pong-optimized-r45b2-nos41>
+(`sha256 8fa6adca90ad799fa976a69708a6fa7244f17554316ecc5840eff466503bd9d5`).
+Never booted on hardware — `fastboot boot` it, don't flash.
+
 ## No source patches needed
 
 An earlier revision shipped a patch removing a dangling
-`EXPORT_SYMBOL_GPL(map_kernel_range)`. That was only required because that
-revision wrongly set `CONFIG_MODULES=y`; with `LAZY_INITCALL=y` (the correct
-setting for this tree) `EXPORT_SYMBOL*` is a no-op and the stale export is
-harmless. The tree builds unpatched.
+`EXPORT_SYMBOL_GPL(map_kernel_range)`. It was only needed because that
+revision wrongly set `CONFIG_MODULES=y`; under `LAZY_INITCALL=y` (correct for
+this tree) `EXPORT_SYMBOL*` is a no-op and the stale export is harmless. The
+only out-of-tree files required are the focaltech firmware headers above.

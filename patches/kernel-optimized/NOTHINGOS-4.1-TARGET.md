@@ -85,42 +85,56 @@ adb shell cat /sys/kernel/mm/lru_gen/enabled
 
 Make it persistent from userspace once it is proven stable.
 
-## Verified on the build VM
+## Verified on the build VM — built successfully
 
-Steps 1-5 were run on `max-perf-kernel-builder`. Three real blockers were
-found and fixed; all are now handled by the fragment:
+Built end-to-end on `max-perf-kernel-builder`. `BUILD_RC=0`, `Image.gz`
+18.2 MB, `boot.img` 19.8 MB, header v4, `os_version=16.0.0`,
+`security_patch=2026-06`. Published as a release (see BUILD.md).
 
-1. **LTO silently disabled.** `HAS_LTO_CLANG` needs `AS_IS_LLVM` + `llvm-nm` +
-   `llvm-ar`. Passing only `CC`/`LD` fails the gate and yields
-   `CONFIG_LTO_NONE=y`, taking CFI with it. Not a clang-version issue —
-   Debian clang 19.1.7 works with the full toolset and `LLVM_IAS=1`. The
-   earlier guess that this needed clang 22 was wrong.
-2. **`LAZY_INITCALL` kills module support.** `menuconfig MODULES` has
-   `depends on !LAZY_INITCALL`, so arter97's `CONFIG_LAZY_INITCALL=y` disables
-   modules entirely, leaving 328 inert `=m` lines — including `QCOM_KGSL`,
-   the GPU driver. Building from his committed defconfig as-is yields a
-   kernel with no GPU driver and no vendor stack.
-3. **Dependency chains.** `QCOM_MEMLAT` needs `QCOM_DCVS` + `QCOM_PMU_LIB`;
-   the GPU governors need `QCOM_KGSL`. Forcing a leaf without its parents
-   leaves it `=m`.
+Feature counts in the finished kernel, vs the reference builds:
 
-With the fragment applied and `LAZY_INITCALL` off: every vendor symbol
-resolves to `=y`, `LTO_CLANG_THIN=y`, `LRU_GEN=y`, `DAMON=y`, and **0 stale
-`=m` symbols remain**.
+| | arter97 r45b2 | Meteoric | this build |
+|---|---|---|---|
+| `lru_gen` (MGLRU) | 3 | 0 | **3** |
+| `damon` | 0 | 25 | **25** |
+| `memlat` | 45 | 45 | **45** |
+| `waltgov` | 5 | 5 | **5** |
+
+Four things had to be understood to get there:
+
+1. **LTO needs the full LLVM toolset.** `HAS_LTO_CLANG` requires `AS_IS_LLVM`
+   plus `llvm-nm` and `llvm-ar`. Passing only `CC`/`LD` fails the gate and
+   silently yields `CONFIG_LTO_NONE=y`, taking CFI with it. Not a
+   clang-version issue — Debian clang 19.1.7 works with the whole toolset and
+   `LLVM_IAS=1`.
+2. **`LAZY_INITCALL` is the modules symbol.** `init/Kconfig` puts
+   `option modules` on `menuconfig LAZY_INITCALL`, and
+   `MODULES depends on !LAZY_INITCALL` — they are mutually exclusive. It
+   builds a monolithic kernel where `=m` means "compiled in, initcall
+   deferred until userspace modprobes that name". So arter97's 328 `=m`
+   symbols are **not** stale: `CONFIG_QCOM_KGSL=m` means the Adreno driver is
+   present. Forcing `CONFIG_MODULES=y` strips `option modules`, promotes all
+   328 to immediate built-in, and breaks the build — `qcacld-3.0`'s Kbuild is
+   not written for `built-in.a`, and `focaltech_touch` then fails too. Leave
+   `LAZY_INITCALL=y` alone.
+3. **The tree does not build as published.** `focaltech_touch` needs
+   `include/firmware/FT3680_..._app.i`, referenced by `focaltech_config.h` and
+   required by `CONFIG_TOUCHSCREEN_FTS=m` in his own defconfig, but never
+   committed and not gitignored. Sourced from a separate NP2 tree.
+4. **`pigz` is required** — his Makefile uses parallel gzip for
+   `kernel/config_data.gz`; without it the build dies with `Error 127`.
 
 ## Residual risk
 
-- **The committed defconfig does not reproduce the shipped r45b2.** His
-  binary contains WALT/memlat/GPU code that a build from his own defconfig
-  would omit. Whatever config he ships from is not in the public tree, so
-  this build is "arter97's source, our config" — not a rebuild of r45b2.
-- Because module support is restored here, stock 4.1 `vendor_dlkm` modules
-  may now load *alongside* built-in drivers. Watch for duplicate driver init
-  on the first boot: `dmesg | grep -iE "already registered|duplicate|failed"`.
-- `CONFIG_QCOM_KGSL=y` builds the Adreno driver in. If the 4.1 `vendor_dlkm`
-  also provides `msm_kgsl.ko`, the built-in one wins and the module should
-  fail to load harmlessly — but that is unverified on hardware.
-- His config sets `CONFIG_LOCALVERSION="-arter97-'$(cat version)'"` with
-  `LOCALVERSION_AUTO=y`. Module vermagic derives from the release string; if
-  vendor modules refuse to load, this is the first thing to look at.
-- `fastboot boot` first, never flash. Nothing here has been booted on a device.
+- **The committed defconfig does not reproduce the shipped r45b2.** Whatever
+  config he ships from is not public, so this is "arter97's source, our
+  config" — not a rebuild of r45b2.
+- **Never booted.** No hardware validation whatsoever. `fastboot boot` only.
+- Kernel is 5.10.251 against 4.1's 5.10.237 vendor blobs. Same
+  `android12-5.10` KMI generation so it should hold, but this is the most
+  likely failure and shows up as no display/modem/wifi. First check on boot:
+  `dmesg | grep -iE "module|kmi|vermagic|failed"`.
+- MGLRU is compiled in but **off at boot** (no `CONFIG_LRU_GEN_ENABLED` in
+  this tree). Enable via sysfs, make persistent only once proven stable.
+- The build lives on the VM's `/dev/sdb`, which has **no fstab entry** and
+  silently unmounted once mid-session. Remount with `mount /dev/sdb /mnt/build`.
