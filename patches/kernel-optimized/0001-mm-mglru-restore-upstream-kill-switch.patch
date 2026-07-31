@@ -1,0 +1,258 @@
+From: notmuch2 kernel-optimized
+Subject: [PATCH] mm: multi-gen LRU: restore the upstream runtime kill switch
+
+arter97's MGLRU backport hardwires the feature on:
+
+    #define lru_gen_enabled() true
+
+and exposes /sys/kernel/mm/lru_gen/enabled as __ATTR_RO, where it reports a
+capability bitmask rather than a state. There is therefore no way to turn
+MGLRU off on a running device, which means no way to measure what it is
+worth, and no escape hatch if it makes LMKD over-aggressive (a regression
+arter97 has himself described).
+
+Most of the upstream infrastructure is already present in his tree --
+NR_LRU_GEN_CAPS, LRU_GEN_CORE, seq_is_valid(), get_lruvec() and the
+lrugen.enabled field all exist, and state_is_valid() is carried but marked
+__maybe_unused, orphaned by the removal of its only caller. This restores
+the missing pieces from upstream v6.1:
+
+  - the lru_gen_caps[] static key array and get_cap()
+  - fill_evictable() / drain_evictable(), which rebuild the LRU lists when
+    the switch is flipped
+  - lru_gen_change_state()
+  - a writable sysfs handler, __ATTR(enabled, 0644, ...)
+  - CONFIG_LRU_GEN_ENABLED, upstream's "on by default" option
+
+Ported from the folio API to this tree's page API: lru_to_folio ->
+lru_to_page, folio_test_* -> Page*, lruvec_{add,del}_folio ->
+{add_page_to,del_page_from}_lru_list, lru_gen_{add,del}_folio ->
+lru_gen_{add,del}_page, lrugen.lists -> lrugen.folios. The LRU lock is
+per-node here (pgdat->lru_lock), not the per-lruvec lock upstream uses.
+
+state_is_valid() keeps __maybe_unused: its only references are inside
+VM_WARN_ON_ONCE, which compiles away without CONFIG_DEBUG_VM.
+
+With this, MGLRU can be toggled at runtime:
+
+    echo n > /sys/kernel/mm/lru_gen/enabled   # off
+    echo y > /sys/kernel/mm/lru_gen/enabled   # on
+    cat /sys/kernel/mm/lru_gen/enabled        # capability mask
+
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -2631,6 +2631,14 @@
+ 
+ #ifdef CONFIG_LRU_GEN
+ 
++#ifdef CONFIG_LRU_GEN_ENABLED
++DEFINE_STATIC_KEY_ARRAY_TRUE(lru_gen_caps, NR_LRU_GEN_CAPS);
++#define get_cap(cap)	static_branch_likely(&lru_gen_caps[cap])
++#else
++DEFINE_STATIC_KEY_ARRAY_FALSE(lru_gen_caps, NR_LRU_GEN_CAPS);
++#define get_cap(cap)	static_branch_unlikely(&lru_gen_caps[cap])
++#endif
++
+ /******************************************************************************
+  *                          shorthand helpers
+  ******************************************************************************/
+@@ -5046,6 +5054,121 @@
+ 	return true;
+ }
+ 
++/* the LRU lists are rebuilt when the kill switch is flipped */
++static bool fill_evictable(struct lruvec *lruvec)
++{
++	enum lru_list lru;
++	int remaining = MAX_LRU_BATCH;
++
++	for_each_evictable_lru(lru) {
++		int type = is_file_lru(lru);
++		bool active = is_active_lru(lru);
++		struct list_head *head = &lruvec->lists[lru];
++
++		while (!list_empty(head)) {
++			bool success;
++			struct page *page = lru_to_page(head);
++
++			VM_WARN_ON_ONCE(PageUnevictable(page));
++			VM_WARN_ON_ONCE(PageActive(page) != active);
++			VM_WARN_ON_ONCE(page_is_file_lru(page) != type);
++			VM_WARN_ON_ONCE(page_lru_gen(page) != -1);
++
++			del_page_from_lru_list(page, lruvec);
++			success = lru_gen_add_page(lruvec, page, false);
++			VM_WARN_ON_ONCE(!success);
++
++			if (!--remaining)
++				return false;
++		}
++	}
++
++	return true;
++}
++
++static bool drain_evictable(struct lruvec *lruvec)
++{
++	int gen, type, zone;
++	int remaining = MAX_LRU_BATCH;
++
++	for_each_gen_type_zone(gen, type, zone) {
++		struct list_head *head = &lruvec->lrugen.folios[gen][type][zone];
++
++		while (!list_empty(head)) {
++			bool success;
++			struct page *page = lru_to_page(head);
++
++			VM_WARN_ON_ONCE(PageUnevictable(page));
++			VM_WARN_ON_ONCE(PageActive(page));
++			VM_WARN_ON_ONCE(page_is_file_lru(page) != type);
++			VM_WARN_ON_ONCE(page_zonenum(page) != zone);
++
++			success = lru_gen_del_page(lruvec, page, false);
++			VM_WARN_ON_ONCE(!success);
++			add_page_to_lru_list(page, lruvec);
++
++			if (!--remaining)
++				return false;
++		}
++	}
++
++	return true;
++}
++
++static void lru_gen_change_state(bool enabled)
++{
++	static DEFINE_MUTEX(state_mutex);
++
++	struct mem_cgroup *memcg;
++
++	cgroup_lock();
++	cpus_read_lock();
++	get_online_mems();
++	mutex_lock(&state_mutex);
++
++	if (enabled == lru_gen_enabled())
++		goto unlock;
++
++	if (enabled)
++		static_branch_enable_cpuslocked(&lru_gen_caps[LRU_GEN_CORE]);
++	else
++		static_branch_disable_cpuslocked(&lru_gen_caps[LRU_GEN_CORE]);
++
++	memcg = mem_cgroup_iter(NULL, NULL, NULL);
++	do {
++		int nid;
++
++		for_each_node(nid) {
++			struct lruvec *lruvec = get_lruvec(memcg, nid);
++
++			if (!lruvec)
++				continue;
++
++			spin_lock_irq(&lruvec_pgdat(lruvec)->lru_lock);
++
++			VM_WARN_ON_ONCE(!seq_is_valid(lruvec));
++			VM_WARN_ON_ONCE(!state_is_valid(lruvec));
++
++			lruvec->lrugen.enabled = enabled;
++
++			while (!(enabled ? fill_evictable(lruvec) : drain_evictable(lruvec))) {
++				spin_unlock_irq(&lruvec_pgdat(lruvec)->lru_lock);
++				cond_resched();
++				spin_lock_irq(&lruvec_pgdat(lruvec)->lru_lock);
++			}
++
++			spin_unlock_irq(&lruvec_pgdat(lruvec)->lru_lock);
++		}
++
++		cond_resched();
++	} while ((memcg = mem_cgroup_iter(NULL, memcg, NULL)));
++unlock:
++	mutex_unlock(&state_mutex);
++	put_online_mems();
++	cpus_read_unlock();
++	cgroup_unlock();
++}
++
+ /******************************************************************************
+  *                          sysfs interface
+  ******************************************************************************/
+@@ -5088,7 +5211,36 @@
+ 	return snprintf(buf, PAGE_SIZE, "0x%04x\n", caps);
+ }
+ 
+-static struct kobj_attribute lru_gen_enabled_attr = __ATTR_RO(enabled);
++static ssize_t store_enabled(struct kobject *kobj, struct kobj_attribute *attr,
++			     const char *buf, size_t len)
++{
++	int i;
++	unsigned int caps;
++
++	if (tolower(*buf) == 'n')
++		caps = 0;
++	else if (tolower(*buf) == 'y')
++		caps = -1;
++	else if (kstrtouint(buf, 0, &caps))
++		return -EINVAL;
++
++	for (i = 0; i < NR_LRU_GEN_CAPS; i++) {
++		bool enabled = caps & BIT(i);
++
++		if (i == LRU_GEN_CORE)
++			lru_gen_change_state(enabled);
++		else if (enabled)
++			static_branch_enable(&lru_gen_caps[i]);
++		else
++			static_branch_disable(&lru_gen_caps[i]);
++	}
++
++	return len;
++}
++
++static struct kobj_attribute lru_gen_enabled_attr = __ATTR(
++	enabled, 0644, enabled_show, store_enabled
++);
+ 
+ static struct attribute *lru_gen_attrs[] = {
+ 	&lru_gen_min_ttl_attr.attr,
+--- a/include/linux/mm_inline.h
++++ b/include/linux/mm_inline.h
+@@ -92,7 +92,21 @@
+ 
+ #ifdef CONFIG_LRU_GEN
+ 
+-#define lru_gen_enabled() true
++#ifdef CONFIG_LRU_GEN_ENABLED
++static inline bool lru_gen_enabled(void)
++{
++	DECLARE_STATIC_KEY_TRUE(lru_gen_caps[NR_LRU_GEN_CAPS]);
++
++	return static_branch_likely(&lru_gen_caps[LRU_GEN_CORE]);
++}
++#else
++static inline bool lru_gen_enabled(void)
++{
++	DECLARE_STATIC_KEY_FALSE(lru_gen_caps[NR_LRU_GEN_CAPS]);
++
++	return static_branch_unlikely(&lru_gen_caps[LRU_GEN_CORE]);
++}
++#endif
+ 
+ static inline bool lru_gen_in_fault(void)
+ {
+--- a/mm/Kconfig
++++ b/mm/Kconfig
+@@ -947,6 +947,12 @@
+ 	  A high performance LRU implementation to overcommit memory. See
+ 	  Documentation/admin-guide/mm/multigen_lru.rst for details.
+ 
++config LRU_GEN_ENABLED
++	bool "Enable by default"
++	depends on LRU_GEN
++	help
++	  This option enables the multi-gen LRU by default.
++
+ config LRU_GEN_STATS
+ 	bool "Full stats for debugging"
+ 	depends on LRU_GEN
