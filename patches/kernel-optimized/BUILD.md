@@ -122,6 +122,33 @@ Only flash after a `fastboot boot` session survives normal use.
   17 kernels. Treat the first build as a hypothesis to measure, not a
   finished tune.
 
+## Variants
+
+Two images, differing in exactly three symbols:
+
+| | hardening | build |
+|---|---|---|
+| **A — balanced** (default) | `SHADOW_CALL_STACK`, `HARDENED_USERCOPY`, `INIT_STACK_ALL_ZERO` **on** | `pong_optimized.fragment` |
+| **B — performance** | all three **off**, matching arter97 exactly | `+ pong_performance_overlay.fragment` |
+
+Both keep CPU mitigations on, CFI and KASAN off, O2, ThinLTO. Variant A was
+chosen originally on a safety bias that was never asked for; B is the
+internally consistent "fastest thing that boots". Build B with:
+
+```sh
+scripts/kconfig/merge_config.sh -m .config \
+    ../cfg/patches/kernel-optimized/pong_optimized.fragment \
+    ../cfg/patches/kernel-optimized/pong_performance_overlay.fragment
+```
+
+## Hardware status
+
+**Variant A boots and runs** — flashed on LineageOS (not the Nothing OS 4.1
+it was stamped for; anti-rollback only requires the stamp be >= the device's,
+so `os 16.0.0 / SPL 2026-06` passes there too). That settles the main open
+risk: a 5.10.251 arter97-derived kernel works against this device's vendor
+blobs.
+
 ## Built artifact
 
 A verified build is published as a release:

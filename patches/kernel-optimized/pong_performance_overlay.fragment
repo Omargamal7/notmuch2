@@ -1,0 +1,32 @@
+# Performance overlay — apply AFTER pong_optimized.fragment
+#
+#   scripts/kconfig/merge_config.sh -m .config \
+#       patches/kernel-optimized/pong_optimized.fragment \
+#       patches/kernel-optimized/pong_performance_overlay.fragment
+#
+# This is variant B of a deliberate A/B. Variant A (the base fragment alone)
+# re-enables three cheap kernel mitigations that arter97 removes. This overlay
+# puts them back the way he has them, so the build matches his hardening
+# posture exactly and the two images differ ONLY in these three symbols.
+#
+# Why he removes them: they are his actual performance strategy — not
+# `mitigations=off` (he leaves CPU mitigations ON), not `-O3` (he uses O2).
+# Verified by reading his tree, not his embedded config.
+#
+# Rough cost of each, highest first:
+#   INIT_STACK_ALL_ZERO  zeroes stack variables on every function entry —
+#                        the expensive one, workload-dependent
+#   SHADOW_CALL_STACK    separate return-address stack, reserves x18
+#   HARDENED_USERCOPY    bounds-checks every copy_to/from_user
+#
+# Note CFI_CLANG and KASAN are already off in variant A, matching him, so
+# they are not repeated here.
+#
+# Security cost is real: these are the cheapest exploit mitigations in the
+# kernel. Run this variant only if the speed difference is one you can
+# actually perceive — otherwise variant A is the better daily driver.
+
+# CONFIG_INIT_STACK_ALL_ZERO is not set
+CONFIG_INIT_STACK_NONE=y
+# CONFIG_SHADOW_CALL_STACK is not set
+# CONFIG_HARDENED_USERCOPY is not set
