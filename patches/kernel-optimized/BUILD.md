@@ -44,9 +44,9 @@ cd pong && cat version          # must print r45b2
 
 # arter97's tree does NOT build as published: focaltech_touch needs firmware
 # headers that were never committed. Source them from any other NP2 kernel
-# tree, e.g. a Nothing OS 4.1 build tree (already on the VM):
-cp -r /home/Admin/pong-nos41-kernel-build/drivers/input/touchscreen/focaltech_touch/include/firmware \
-      drivers/input/touchscreen/focaltech_touch/include/
+# tree, e.g. a Nothing OS 4.1 build tree:
+#   cp -r <other-tree>/drivers/input/touchscreen/focaltech_touch/include/firmware \
+#         drivers/input/touchscreen/focaltech_touch/include/
 
 # stamp 4.1, not 4.0 — anti-rollback
 sed -i 's/^export OS=.*/export OS="16.0.0"/;s/^export SPL=.*/export SPL="2026-06"/' build_kernel.sh
@@ -68,17 +68,13 @@ grep -q '^CONFIG_LTO_CLANG_THIN=y' .config || echo "FATAL: LTO off"
 grep -q '^CONFIG_LRU_GEN=y'        .config || echo "FATAL: no MGLRU"
 grep -q '^CONFIG_DAMON=y'          .config || echo "FATAL: no DAMON"
 
-# Ensure pigz is installed (make dies with Error 127 otherwise)
-sudo apt-get install -y pigz
-
 make ARCH=arm64 $TOOLS -j$(nproc) Image.gz
 ./build_kernel.sh skip          # ramdisk + mkbootimg, kernel already built
-# The final image is arter97-kernel-r45b2-boot.img (hardlinked to out/boot.img)
 ```
 
-Build on the GCE kernel-builder VM. The build tree lives on the VM's 200 GB
-disk at `/mnt/build/pong/`. An fstab entry mounts it automatically by UUID, so
-no manual mount is needed.
+Build on the GCE kernel-builder VM. Note its root disk is small — the 200 GB
+`/dev/sdb` has no fstab entry and must be mounted manually
+(`mount /dev/sdb /mnt/build`).
 
 ## Verify before flashing
 
@@ -128,15 +124,14 @@ Only flash after a `fastboot boot` session survives normal use.
 
 ## Variants
 
-Three images, built on the same base:
+Two images, differing in exactly three symbols:
 
-| | difference | build |
+| | hardening | build |
 |---|---|---|
 | **A — balanced** (default) | `SHADOW_CALL_STACK`, `HARDENED_USERCOPY`, `INIT_STACK_ALL_ZERO` **on** | `pong_optimized.fragment` |
 | **B — performance** | all three **off**, matching arter97 exactly | `+ pong_performance_overlay.fragment` |
-| **C — mglru-switch** | A + runtime MGLRU kill switch | `+ 0001-mm-mglru-restore-upstream-kill-switch.patch` |
 
-Both A and B keep CPU mitigations on, CFI and KASAN off, O2, ThinLTO. Variant A was
+Both keep CPU mitigations on, CFI and KASAN off, O2, ThinLTO. Variant A was
 chosen originally on a safety bias that was never asked for; B is the
 internally consistent "fastest thing that boots". Build B with:
 
@@ -144,13 +139,6 @@ internally consistent "fastest thing that boots". Build B with:
 scripts/kconfig/merge_config.sh -m .config \
     ../cfg/patches/kernel-optimized/pong_optimized.fragment \
     ../cfg/patches/kernel-optimized/pong_performance_overlay.fragment
-```
-
-Build C by applying the patch first:
-
-```sh
-git am < ../cfg/patches/kernel-optimized/0001-mm-mglru-restore-upstream-kill-switch.patch
-# then build as A
 ```
 
 ## Hardware status
@@ -168,8 +156,10 @@ A verified build is published as a release:
 (`sha256 8fa6adca90ad799fa976a69708a6fa7244f17554316ecc5840eff466503bd9d5`).
 Never booted on hardware — `fastboot boot` it, don't flash.
 
-## Patches and Built-ins
+## No source patches needed
 
-The `0001-mm-mglru-restore-upstream-kill-switch.patch` restores the upstream v6.1 MGLRU toggle so that it can be tested at runtime.
-
-An earlier revision shipped a patch removing a dangling `EXPORT_SYMBOL_GPL(map_kernel_range)`. It was only needed because that revision wrongly forced `CONFIG_MODULES=y`. This tree correctly uses `LAZY_INITCALL=y` which means `=m` symbols (like the Adreno GPU driver) are actually built-in, avoiding compilation errors and missing firmware issues (like focaltech_touch and qcacld). Under `LAZY_INITCALL=y`, `EXPORT_SYMBOL*` is a no-op and the stale export is harmless.
+An earlier revision shipped a patch removing a dangling
+`EXPORT_SYMBOL_GPL(map_kernel_range)`. It was only needed because that
+revision wrongly set `CONFIG_MODULES=y`; under `LAZY_INITCALL=y` (correct for
+this tree) `EXPORT_SYMBOL*` is a no-op and the stale export is harmless. The
+only out-of-tree files required are the focaltech firmware headers above.
