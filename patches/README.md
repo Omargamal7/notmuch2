@@ -72,3 +72,59 @@ minimal stub that satisfies the import without doing anything real —
 `repack-boot.sh` points `PYTHONPATH` at it. See the comment in
 `scripts/vendor/gki-stub/gki/generate_gki_certificate.py` for the full
 story.
+
+## This branch: `adb-root`
+
+Ships one file: `vendor-ramdisk/force_debuggable` (empty marker).
+
+This isn't a guess — it's what a real `Pong_B4.1-260618-1026`
+`vendor_boot.img` already ships, unpacked and read directly:
+`firmware/boot-unpacked/vendor_boot-ramdisk/first_stage_ramdisk/adb_debug_ndebug.prop`
+contains, verbatim:
+
+```
+# Note: This file will be loaded with highest priority to override
+# other system properties, if a special ramdisk with "/force_debuggable"
+# is used and the device is unlocked.
+
+# Disable adb authentication to allow test automation on user build GSI
+ro.adb.secure=0
+
+# Allow 'adb root' on user build GSI
+ro.debuggable=1
+
+# Introduce this property to indicate that init has loaded adb_debug.prop
+ro.force.debuggable=1
+```
+
+This is AOSP's standard "force-debuggable GSI" mechanism (used to run
+`userdebug`-equivalent test automation against `user` builds), already
+present and inert in stock Nothing OS. It only activates when both are
+true: `/force_debuggable` exists at the ramdisk root (this patch), and the
+bootloader is already unlocked. Nothing else about the partition changes —
+`fstab.qcom`, the AVB public keys, the kernel modules, the dtb, and the
+vendor cmdline are untouched.
+
+**Verified**: the prop file's content and activation condition quoted
+above (read directly from the real unpacked ramdisk); that `build.sh`
+correctly overlays `force_debuggable`, repacks a structurally valid
+`vendor_boot.img`, and that re-unpacking the result shows the marker file
+present alongside every original entry unchanged.
+
+**Assumed, not verified** (no physical device in this environment): that
+this actually produces the intended `adb root` behavior when flashed and
+booted — the prop file's own comment is the only source for that, not an
+observed boot; and that Nothing's AVB/vbmeta chain tolerates the repacked
+image's missing AVB footer on an already-unlocked bootloader (the same
+situation any Magisk-patched boot image is already in — see the AVB-footer
+note above).
+
+```sh
+git checkout adb-root
+./scripts/build.sh
+# -> out/vendor_boot.img (patched), out/boot.img (stock, unchanged)
+
+fastboot boot out/vendor_boot.img   # boot-test before flashing, always
+# once confirmed:
+fastboot flash vendor_boot out/vendor_boot.img
+```
