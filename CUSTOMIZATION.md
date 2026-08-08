@@ -49,3 +49,11 @@ against the real release assets during development.
 
 See `device/updates.md` for the build history and why the current build
 came from GitHub release assets rather than an OTA payload.
+
+## Planning a customization
+
+Before starting a new customization branch, check `research/` — it holds
+source-grounded diff research (currently: LineageOS vs. this repo's pinned
+stock build) and a roadmap (`research/customization-plan.md`) translating that
+research into concrete next branches, in dependency order, against what's
+actually built in this repo so far.
