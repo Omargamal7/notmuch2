@@ -5,3 +5,5 @@ firmware/*
 
 # Build output
 out/
+
+__pycache__/
