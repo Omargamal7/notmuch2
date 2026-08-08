@@ -17,16 +17,31 @@ if [[ ! -d firmware/extracted ]]; then
   fi
 fi
 
-if [[ -d patches/ramdisk || -d patches/system-overlay ]]; then
+mkdir -p out
+
+touches_boot_ramdisk=false
+touches_vendor_ramdisk=false
+[[ -d patches/ramdisk ]] && touches_boot_ramdisk=true
+[[ -d patches/vendor-ramdisk ]] && touches_vendor_ramdisk=true
+
+if $touches_boot_ramdisk || $touches_vendor_ramdisk; then
   ./scripts/unpack-boot.sh
-  if [[ -d patches/ramdisk ]]; then
-    cp -r patches/ramdisk/. firmware/boot-unpacked/ramdisk/ 2>/dev/null || true
-  fi
-  ./scripts/repack-boot.sh
+  $touches_boot_ramdisk && cp -a patches/ramdisk/. firmware/boot-unpacked/boot-ramdisk/
+  $touches_vendor_ramdisk && cp -a patches/vendor-ramdisk/. firmware/boot-unpacked/vendor_boot-ramdisk/
+  ./scripts/repack-boot.sh "$touches_boot_ramdisk" "$touches_vendor_ramdisk"
 else
-  echo "No patches for this branch — nothing to customize, stock boot.img only."
-  mkdir -p out
+  echo "No boot/vendor_boot ramdisk patches for this branch."
+fi
+
+if ! $touches_boot_ramdisk && [[ -f firmware/extracted/boot.img ]]; then
   cp firmware/extracted/boot.img out/boot.img
+fi
+if ! $touches_vendor_ramdisk && [[ -f firmware/extracted/vendor_boot.img ]]; then
+  cp firmware/extracted/vendor_boot.img out/vendor_boot.img
+fi
+
+if [[ -d patches/system-overlay ]]; then
+  echo "patches/system-overlay present but rebuilding system/vendor/product images is not implemented by this script yet -- apply those changes manually." >&2
 fi
 
 echo "Build output in ./out"
